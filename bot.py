@@ -8,7 +8,6 @@ from aiogram import Bot
 TELEGRAM_TOKEN = "8920355118:AAFexi7N6hqjcGjz-IiUhCQbuQZgphlXmSI"
 CHAT_ID = 1059060123
 
-# Категории для поиска на 999.md (Телефоны, Ноутбуки, Аудио/Наушники, Приставки)
 CATEGORIES = [
     "https://999.md/ru/list/phone-and-communication/mobile-phones",
     "https://999.md/ro/list/phone-and-communication/mobile-phones",
@@ -17,44 +16,38 @@ CATEGORIES = [
     "https://999.md/ru/list/game-consoles-and-games/consoles"
 ]
 
-# Ключевые слова дефектов / выгоды (RU + RO)
-KEYWORDS = [
-    # Неисправности / под ремонт
+# Ключевые слова неисправностей (для категории "Под ремонт")
+DEFECT_KEYWORDS = [
     "разбит", "трещина", "экран", "не включается", "не заряжается", 
     "запчасти", "дефект", "пароль", "срочно", "замена", "под восстановление", 
     "утопленник", "плата", "без фейса", "spart", "ecran", "defect", "piese", 
-    "nu se aprinde", "nu incarca", "blocat", "reparatie", "sticla", "baterie",
-    # Маркеры выгоды / срочной продажи
-    "срочно", "urgenta", "cheap", "дешево", "распродажа", "новый", "sigilat"
+    "nu se aprinde", "nu incarca", "blocat", "reparatie", "sticla", "baterie"
 ]
 
-# Приоритетные бренды (Айфоны выделяем отдельно)
-PRIORITY_BRANDS = ["iphone", "apple", "macbook", "airpods", "ipad", "playstation", "ps4", "ps5"]
+PRIORITY_BRANDS = ["iphone", "apple", "macbook", "airpods", "ipad", "playstation", "ps4", "ps5", "samsung", "xiaomi"]
 
-CHECK_INTERVAL = 20  # Проверка каждые 20 секунд
+CHECK_INTERVAL = 25  # Пауза между проверками (секунд)
 # ==============================================================
 
 bot = Bot(token=TELEGRAM_TOKEN)
 seen_ads = set()
 
 def parse_price(price_str):
-    """Извлекает числовое значение цены из строки"""
     if not price_str:
         return None
-    # Ищем все цифры в строке цены
     numbers = re.findall(r'\d+', price_str.replace(" ", ""))
     if numbers:
         return int("".join(numbers))
     return None
 
 def get_market_average(title):
-    """
-    Примерная оценка средней цены по заголовку.
-    Скрипт делает быстрый поиск по похожим объявлениям на 999.md.
-    """
     try:
-        # Очищаем заголовок от слов дефектов для поиска целых аналогов
-        clean_title = re.sub(r'(разбит|spart|ecran|экран|дефект|defect|срочно|urgenta|на запчасти)', '', title, flags=re.IGNORECASE).strip()
+        # Очищаем заголовок от мусорных слов для поиска аналогичных моделей
+        clean_title = re.sub(
+            r'(разбит|spart|ecran|экран|дефект|defect|срочно|urgenta|на запчасти|stare buna|состояние хорошее|nou|новый)', 
+            '', title, flags=re.IGNORECASE
+        ).strip()
+        
         if len(clean_title) < 4:
             return None
 
@@ -68,17 +61,15 @@ def get_market_average(title):
         items = soup.find_all('li', class_=re.compile(r'ads-list-detail-item'))
         
         prices = []
-        for item in items[:8]:  # Берем первые 8 похожих товаров
+        for item in items[:8]:
             p_tag = item.find('div', class_=re.compile(r'ads-list-detail-item-price'))
             if p_tag:
                 val = parse_price(p_tag.text)
-                if val and val > 10:  # Игнорируем варианты за 1 лей
+                if val and val > 50: # Игнорируем цены 1-10 лей
                     prices.append(val)
         
         if prices:
-            # Считаем среднее арифметическое
-            avg_price = sum(prices) // len(prices)
-            return avg_price
+            return sum(prices) // len(prices)
     except Exception:
         pass
     return None
@@ -97,14 +88,12 @@ def check_ads():
             items = soup.find_all('li', class_=re.compile(r'ads-list-detail-item'))
 
             for item in items:
-                # 1. ФИЛЬТР ПО ГОРОДУ: Проверяем, что лот из Кишинева
+                # 1. Проверка города: ТОЛЬКО КИШИНЕВ
                 subtext = item.find('div', class_=re.compile(r'ads-list-detail-item-subtext'))
                 region = subtext.text.strip().lower() if subtext else ""
                 
-                # Если в описании региона есть упоминание района/города (Chisinau / Кишинев)
-                # На 999.md если регион не указан в короткой карточке, пропускаем строгие блокировки
                 if region and not any(city in region for city in ["chișinău", "chisinau", "кишинев", "кишинёв"]):
-                    continue  # Пропускаем Бельцы, Тирасполь и т.д.
+                    continue
 
                 link_tag = item.find('a', href=re.compile(r'/(ru|ro)/\d+'))
                 if not link_tag:
@@ -119,28 +108,29 @@ def check_ads():
                 title = link_tag.text.strip()
                 title_lower = title.lower()
 
-                # Проверка ключевых слов
-                is_keyword_match = any(kw in title_lower for kw in KEYWORDS)
+                price_tag = item.find('div', class_=re.compile(r'ads-list-detail-item-price'))
+                raw_price = price_tag.text.strip() if price_tag else "Не указана"
+                num_price = parse_price(raw_price)
+
+                # Проверяем, есть ли дефект в описании
+                has_defect = any(kw in title_lower for kw in DEFECT_KEYWORDS)
                 is_priority = any(brand in title_lower for brand in PRIORITY_BRANDS)
 
-                if is_keyword_match or is_priority:
-                    price_tag = item.find('div', class_=re.compile(r'ads-list-detail-item-price'))
-                    raw_price = price_tag.text.strip() if price_tag else "Не указана"
-                    num_price = parse_price(raw_price)
+                # Рассчитываем среднюю цену на рынке
+                avg_market = get_market_average(title)
+                discount_percent = 0
+                
+                if num_price and avg_market and avg_market > num_price:
+                    discount_percent = int(((avg_market - num_price) / avg_market) * 100)
 
+                # КРИТЕРИИ ОТБОРА:
+                # 1. Это дефектный лот под ремонт
+                # 2. ИЛИ это ОБЫЧНЫЙ целое устройство, но цена ниже рынка минимум на 15%
+                is_good_deal = (has_defect) or (discount_percent >= 15)
+
+                if is_good_deal:
                     full_link = f"https://999.md{ad_href}" if not ad_href.startswith('http') else ad_href
-
-                    # Считаем среднюю рыночную цену
-                    avg_market = get_market_average(title)
-
-                    # Оцениваем, насколько выгоден лот
-                    is_super_deal = False
-                    discount_percent = 0
-                    if num_price and avg_market and avg_market > num_price:
-                        discount_percent = int(((avg_market - num_price) / avg_market) * 100)
-                        if discount_percent >= 25:  # Если скидка от 25% и выше
-                            is_super_deal = True
-
+                    
                     new_matches.append({
                         'title': title,
                         'link': full_link,
@@ -148,8 +138,8 @@ def check_ads():
                         'num_price': num_price,
                         'avg_market': avg_market,
                         'discount': discount_percent,
+                        'has_defect': has_defect,
                         'is_priority': is_priority,
-                        'is_super_deal': is_super_deal,
                         'id': ad_id
                     })
 
@@ -161,41 +151,44 @@ def check_ads():
     return new_matches
 
 async def main():
-    print("🚀 Продвинутый бот запущен! Фильтр: Кишинев | Техника + Телефоны | Оценка рынка...")
+    print("🚀 Бот запущен! Ищет целую технику по скидке + дефекты под ремонт (Кишинев)...")
     await bot.send_message(
         CHAT_ID, 
-        "⚙️ **Умный бот-перекуп запущен!**\n"
-        "📍 **Локация:** Только Кишинев\n"
-        "📱 **Категории:** Apple, Android, Ноутбуки, Наушники, Консоли\n"
-        "📊 **Анализ:** Авто-расчет средней рыночной цены и маржи."
+        "⚙️ **Обновленный бот-перекуп готов к охоте!**\n"
+        "📍 **Город:** Только Кишинев\n"
+        "📱 **Ищет:**\n"
+        "1. Целые нормальные телефоны/технику ниже рынка (скидка от 15%)\n"
+        "2. Варианты под ремонт / с дефектами"
     )
 
     while True:
         ads = check_ads()
         for ad in ads:
-            # Заголовок карточки в зависимости от крутости лота
-            if ad['is_super_deal'] and ad['is_priority']:
-                header = "🔥🚨 **ТОП СВЕРХВЫГОДНЫЙ APPLE ЛОТ!** 🚨🔥"
-            elif ad['is_super_deal']:
-                header = "💎 **ВЫГОДНОЕ ПРЕДЛОЖЕНИЕ (НИЖЕ РЫНКА)!** 💎"
-            elif ad['is_priority']:
-                header = "🍏 **APPLE / ПРИОРИТЕТНЫЙ ТОВАР**"
+            # Оформление карточки
+            if ad['discount'] >= 30:
+                header = "🔥🚨 **СВЕРХВЫГОДНЫЙ ЛОТ (СКИДКА ОТ 30%)!** 🚨🔥"
+            elif not ad['has_defect'] and ad['discount'] >= 15:
+                header = "📱✅ **ОТЛИЧНЫЙ ЦЕЛЫЙ ТЕЛЕФОН / ТЕХНИКА НИЖЕ РЫНКА!**"
+            elif ad['has_defect']:
+                header = "🛠 **ПОТЕНЦИАЛЬНЫЙ ЛОТ ПОД РЕМОНТ / НА ДЕТАЛИ**"
             else:
-                header = "🛠 **ПОТЕНЦИАЛЬНЫЙ ЛОТ ПОД РЕМОНТ / ПЕРЕКУП**"
+                header = "📌 **ИНТЕРЕСНОЕ ПРЕДЛОЖЕНИЕ**"
 
-            # Формируем красивую аналитику цен
             price_info = f"💳 **Цена продавца:** `{ad['raw_price']}`\n"
             if ad['avg_market']:
-                price_info += f"📈 **Средняя цена б/у рынка:** `~{ad['avg_market']} (лей/€)`\n"
+                price_info += f"📈 **Средняя цена рынка:** `~{ad['avg_market']} MDL/€`\n"
                 if ad['discount'] > 0:
-                    price_info += f"🎁 **Выгода / Скидка:** `~{ad['discount']}% ниже рынка`\n"
+                    price_info += f"🎁 **Выгода:** `~{ad['discount']}% ниже рынка`\n"
             else:
-                price_info += "📈 **Средняя цена рынка:** `Уточняется / Уникальный лот`\n"
+                price_info += "📈 **Средняя цена рынка:** `Сложится при анализе`\n"
+
+            status_tag = "🛠 Дефект/Ремонт" if ad['has_defect'] else "✅ Целое / Рабочее состояние"
 
             message = (
                 f"{header}\n\n"
                 f"📌 **Товар:** {ad['title']}\n"
-                f"📍 **Город:** Кишинев\n\n"
+                f"📍 **Город:** Кишинев\n"
+                f"Состояние: {status_tag}\n\n"
                 f"{price_info}\n"
                 f"🔗 [Открыть на 999.md]({ad['link']})"
             )
