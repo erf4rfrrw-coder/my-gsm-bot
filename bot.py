@@ -1,8 +1,10 @@
 import asyncio
+import os
 import re
 import requests
 from bs4 import BeautifulSoup
 from aiogram import Bot
+from aiohttp import web
 
 # ================= НАСТРОЙКИ С ВАШИМИ ДАННЫМИ =================
 TELEGRAM_TOKEN = "8920355118:AAFexi7N6hqjcGjz-IiUhCQbuQZgphlXmSI"
@@ -16,7 +18,6 @@ CATEGORIES = [
     "https://999.md/ru/list/game-consoles-and-games/consoles"
 ]
 
-# Ключевые слова неисправностей (для категории "Под ремонт")
 DEFECT_KEYWORDS = [
     "разбит", "трещина", "экран", "не включается", "не заряжается", 
     "запчасти", "дефект", "пароль", "срочно", "замена", "под восстановление", 
@@ -32,6 +33,20 @@ CHECK_INTERVAL = 25  # Пауза между проверками (секунд)
 bot = Bot(token=TELEGRAM_TOKEN)
 seen_ads = set()
 
+# ВЕБ-СЕРВЕР ДЛЯ ПРОХОЖДЕНИЯ HEALTH CHECK НА RENDER
+async def handle_health_check(request):
+    return web.Response(text="Bot is active 24/7!")
+
+async def start_dummy_server():
+    app = web.Application()
+    app.router.add_get('/', handle_health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"🌐 Веб-сервер успешно запущен на порту {port}")
+
 def parse_price(price_str):
     if not price_str:
         return None
@@ -42,7 +57,6 @@ def parse_price(price_str):
 
 def get_market_average(title):
     try:
-        # Очищаем заголовок от мусорных слов для поиска аналогичных моделей
         clean_title = re.sub(
             r'(разбит|spart|ecran|экран|дефект|defect|срочно|urgenta|на запчасти|stare buna|состояние хорошее|nou|новый)', 
             '', title, flags=re.IGNORECASE
@@ -65,7 +79,7 @@ def get_market_average(title):
             p_tag = item.find('div', class_=re.compile(r'ads-list-detail-item-price'))
             if p_tag:
                 val = parse_price(p_tag.text)
-                if val and val > 50: # Игнорируем цены 1-10 лей
+                if val and val > 50:
                     prices.append(val)
         
         if prices:
@@ -88,7 +102,6 @@ def check_ads():
             items = soup.find_all('li', class_=re.compile(r'ads-list-detail-item'))
 
             for item in items:
-                # 1. Проверка города: ТОЛЬКО КИШИНЕВ
                 subtext = item.find('div', class_=re.compile(r'ads-list-detail-item-subtext'))
                 region = subtext.text.strip().lower() if subtext else ""
                 
@@ -112,20 +125,15 @@ def check_ads():
                 raw_price = price_tag.text.strip() if price_tag else "Не указана"
                 num_price = parse_price(raw_price)
 
-                # Проверяем, есть ли дефект в описании
                 has_defect = any(kw in title_lower for kw in DEFECT_KEYWORDS)
                 is_priority = any(brand in title_lower for brand in PRIORITY_BRANDS)
 
-                # Рассчитываем среднюю цену на рынке
                 avg_market = get_market_average(title)
                 discount_percent = 0
                 
                 if num_price and avg_market and avg_market > num_price:
                     discount_percent = int(((avg_market - num_price) / avg_market) * 100)
 
-                # КРИТЕРИИ ОТБОРА:
-                # 1. Это дефектный лот под ремонт
-                # 2. ИЛИ это ОБЫЧНЫЙ целое устройство, но цена ниже рынка минимум на 15%
                 is_good_deal = (has_defect) or (discount_percent >= 15)
 
                 if is_good_deal:
@@ -151,20 +159,24 @@ def check_ads():
     return new_matches
 
 async def main():
+    await start_dummy_server()
+    
     print("🚀 Бот запущен! Ищет целую технику по скидке + дефекты под ремонт (Кишинев)...")
-    await bot.send_message(
-        CHAT_ID, 
-        "⚙️ **Обновленный бот-перекуп готов к охоте!**\n"
-        "📍 **Город:** Только Кишинев\n"
-        "📱 **Ищет:**\n"
-        "1. Целые нормальные телефоны/технику ниже рынка (скидка от 15%)\n"
-        "2. Варианты под ремонт / с дефектами"
-    )
+    try:
+        await bot.send_message(
+            CHAT_ID, 
+            "⚙️ **Обновленный бот-перекуп готов к охоте!**\n"
+            "📍 **Город:** Только Кишинев\n"
+            "📱 **Ищет:**\n"
+            "1. Целые нормальные телефоны/технику ниже рынка (скидка от 15%)\n"
+            "2. Варианты под ремонт / с дефектами"
+        )
+    except Exception as e:
+        print(f"Ошибка стартового сообщения: {e}")
 
     while True:
         ads = check_ads()
         for ad in ads:
-            # Оформление карточки
             if ad['discount'] >= 30:
                 header = "🔥🚨 **СВЕРХВЫГОДНЫЙ ЛОТ (СКИДКА ОТ 30%)!** 🚨🔥"
             elif not ad['has_defect'] and ad['discount'] >= 15:
@@ -207,3 +219,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
